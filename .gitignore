@@ -1,0 +1,5 @@
+.pio/
+build/
+*.bin
+*.elf
+*.uf2
