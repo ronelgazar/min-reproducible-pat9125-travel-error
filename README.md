@@ -31,6 +31,11 @@ Roughly **8% short at 3.7 mm/s, 12% short at 12.4 mm/s** — highly repeatable w
 a speed, across many runs and both of two sensors, which is why we read it as
 systematic rather than noise.
 
+> **Provenance:** these figures come from comparing against *commanded* motor travel,
+> which is itself an open-loop assumption. The `r` command below checks the same ratio
+> against a caliper instead, removing that assumption. If you reproduce this, the ruler
+> figure is the one worth reporting back.
+
 **Is this expected for this part on a cylindrical target, and if so what standoff
 and aperture geometry is required to avoid it?**
 
@@ -56,9 +61,32 @@ or open `spi/pat9125_mre_spi/pat9125_mre_spi.ino` in the Arduino IDE. No librari
 
 1. Flash and open the serial monitor at 115200. It must report product ID `0x31`.
 2. Send `z` to zero the counters.
-3. Move the target a **ruler- or caliper-measured** distance at a steady, known speed.
-4. Compare the printed `x_mm` against the true distance.
-5. Repeat at a faster speed and compare the two ratios.
+3. Move the target a **caliper-measured** distance at a steady, known speed.
+4. Type `r <true mm>` — e.g. `r 40.15`. It prints, per sensor:
+
+```
+# RULER CHECK against 40.150 mm
+#   s1: counts=1842 measured=36.693mm ratio=0.9139 (-8.61%)
+#       implied counts/mm = 45.879   (nominal 50.20)
+#   s2: counts=1839 measured=36.633mm ratio=0.9124 (-8.76%)
+#       implied counts/mm = 45.804   (nominal 50.20)
+```
+
+5. Repeat at a faster speed and compare the two ratios — the gap between them is the
+   reported effect.
+
+`ratio` is the headline number: below 1 means the sensor is reporting short.
+`implied counts/mm` is what the measurement says the scale factor actually is, which
+is useful independently of this issue.
+
+### Commands
+
+| | |
+|---|---|
+| `z` | zero the counters |
+| `r <mm>` | ruler check against a measured distance |
+| `t` | step through the guided optical test |
+| `?` | status |
 
 Output is CSV, both sensors per row:
 

@@ -330,6 +330,31 @@ static void advancePhase(){
   }
 }
 
+// ---- ruler verification ------------------------------------------------------
+// The headline ratios in the README came from COMMANDED motor travel, which is
+// itself an assumption. This closes that loop: zero, move a caliper-measured
+// distance, then type the true figure. It reports the ratio directly -- the same
+// quantity the README tabulates -- plus the counts/mm the measurement implies.
+static void verifyAgainst(float trueMm){
+  if (trueMm <= 0.0f){ Serial.println("# usage: r <true distance in mm>, e.g. r 40.15"); return; }
+  Serial.print("# RULER CHECK against "); Serial.print(trueMm, 3); Serial.println(" mm");
+  for (uint8_t s = 0; s < N_SENSORS; ++s){
+    if (!alive[s]) continue;
+    float meas  = cumX[s] / COUNTS_PER_MM;
+    float ratio = fabs(meas) / trueMm;
+    Serial.print("#   s"); Serial.print(s + 1);
+    Serial.print(": counts=");  Serial.print(cumX[s]);
+    Serial.print(" measured="); Serial.print(meas, 3); Serial.print("mm");
+    Serial.print(" ratio=");    Serial.print(ratio, 4);
+    Serial.print(" (");         Serial.print((ratio - 1.0f) * 100.0f, 2); Serial.println("%)");
+    Serial.print("#       implied counts/mm = ");
+    Serial.print(fabs((float)cumX[s]) / trueMm, 3);
+    Serial.print("   (nominal "); Serial.print(COUNTS_PER_MM, 2); Serial.println(")");
+  }
+  Serial.println("#   ratio < 1 = reporting SHORT. Repeat at a second speed and");
+  Serial.println("#   compare the two ratios -- that is the reported effect.");
+}
+
 void setup(){
   Serial.begin(115200);
   while (!Serial && millis() < 3000) {}
@@ -350,14 +375,23 @@ void setup(){
     Serial.print(" frame_avg=");         Serial.println(rd(s, REG_FRAME_AVG));
   }
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
-  Serial.println("# commands: z = zero, ? = status, t = run the guided optical test");
+  Serial.println("# commands: z = zero | r <mm> = ruler check | t = optical test | ? = status");
   Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm,s2_shutter,s2_frame_avg");
 }
 
 void loop(){
-  if (Serial.available()){
-    char c = (char)Serial.read();
-    if (c == 't'){ advancePhase(); }
+  static String cmd;
+  while (Serial.available()){
+    char ch = (char)Serial.read();
+    if (ch != '\n' && ch != '\r'){ if (cmd.length() < 24) cmd += ch; continue; }
+    cmd.trim();
+    if (!cmd.length()) continue;
+    char c = cmd.charAt(0);
+    if (c == 'r'){
+      int sp = cmd.indexOf(' ');
+      verifyAgainst(sp < 0 ? 0.0f : cmd.substring(sp + 1).toFloat());
+    }
+    else if (c == 't'){ advancePhase(); }
     else if (c == 'z'){
       for (uint8_t s = 0; s < N_SENSORS; ++s){ cumX[s] = cumY[s] = 0; motionReads[s] = 0; }
       Serial.println("# zeroed");
@@ -370,6 +404,7 @@ void loop(){
         Serial.print(" motion_reads="); Serial.println(motionReads[s]);
       }
     }
+    cmd = "";
   }
 
   int16_t dx[2] = {0, 0}, dy[2] = {0, 0};
