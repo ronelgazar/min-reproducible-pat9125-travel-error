@@ -1,90 +1,79 @@
 // =============================================================================
 // pat9125_mre_i2c.ino — Minimum reproducible case: PAT9125EL under-reports travel
-//                       I2C variant (PAT9125EL-TKIT)
+//                       I2C variant (PAT9125EL-TKIT), TWO sensors
 // -----------------------------------------------------------------------------
-// Single file, no libraries. Drops into the Arduino IDE or PlatformIO as-is.
-// One sensor, bit-banged I2C. Prints CSV so the result pastes into a spreadsheet.
+// Single file, no libraries. Arduino IDE or PlatformIO, as-is.
+// Two sensors on one shared bus, as in the rig where this was observed -- both
+// report the same shortfall, which is why a single bad part is not the explanation.
 //
-// If your part is the SPI variant (PAT9125EL-TKMT) use ../spi instead. The two
-// part numbers are NOT interchangeable (AN01 1.1): TKIT = I2C, TKMT = SPI.
-// This sketch scans all three documented addresses, so if nothing answers on any
-// of them, you are probably holding the other variant.
+// If your part is the SPI variant (PAT9125EL-TKMT) use ../../spi instead. The two
+// part numbers are NOT interchangeable (AN01 1.1). This sketch scans every
+// documented address, so if nothing answers you are probably holding the other one.
 //
 // THE PROBLEM
-//   Moving the target a ruler-measured distance, the sensor consistently reports
+//   Moving the target a ruler-measured distance, BOTH sensors consistently report
 //   LESS travel than actually occurred -- and the shortfall grows with speed:
-//       ~3.7 mm/s  ->  sensor reads ~91-92% of true travel
-//      ~12.4 mm/s  ->  sensor reads ~88%
-//   Repeatable to +/-0.3% within a speed, across many runs and both of two sensors.
+//       ~3.7 mm/s  ->  ~91-92% of true travel
+//      ~12.4 mm/s  ->  ~88%
+//   Repeatable to +/-0.3% within a speed, over many runs, on both sensors.
 //
 // SETUP IT WAS SEEN ON
-//   RES_X = RES_Y = 0xFF (1275 cpi, nominal 50.2 counts/mm).
-//   Target is a ~2 mm diameter rod sliding axially.
+//   RES_X = RES_Y = 0xFF (1275 cpi, nominal 50.2 counts/mm), ORIENTATION = 0x04.
+//   Target is a ~2 mm diameter rod sliding axially past both sensors.
 //
 // WIRING (any MCU; pins below are Seeed XIAO SAMD21 defaults)
-//   SCL -> D7      clock      -- needs a pull-up to 3V3 (AN01 Fig.1: 5k)
-//   SDA -> D8      data       -- needs a pull-up to 3V3 (AN01 Fig.1: 5k)
-//   ID_SEL         selects the address: GND = 0x75, VDD = 0x73, floating = 0x79
+//   SCL -> D7    shared clock -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
+//   SDA -> D8    shared data  -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
+//   ID_SEL per sensor picks its address: GND = 0x75, VDD = 0x73, floating = 0x79.
+//     Two sensors on one bus therefore need DIFFERENT ID_SEL levels.
 //   VDD -> 3.3 V (2.1-3.6 V)   VLD -> 3.3 V (2.7-3.6 V)   VSS -> GND
 //
 //   BOTH lines need pull-ups. A missing pull-up on SCL is a common cause of
 //   every read returning 0xFF.
 //
 // HOW TO REPRODUCE
-//   1. Flash. Confirm it prints "found 0x31 at 0x75" (or 0x73/0x79).
-//      All-0xFF on every address is a wiring/pull-up/power fault, not this problem.
+//   1. Flash. It should find two sensors at two different addresses.
+//      All-0xFF everywhere is a wiring/pull-up/power fault, not this problem.
 //   2. Send 'z' to zero the counters.
 //   3. Move the target a known distance (ruler/caliper/leadscrew) at a steady,
-//      known speed.
-//   4. Compare the printed x_mm against the true distance.
-//      Repeat at a faster speed and compare the ratio.
+//      known speed, past both sensors.
+//   4. Compare each printed *_x_mm against the true distance.
+//   5. Repeat faster and compare the ratios.
 //
-// COMMANDS:  z = zero counters    ? = print status
+// COMMANDS:  z = zero    ? = status
 // =============================================================================
 #include <Arduino.h>
 
-// ---- pins -------------------------------------------------------------------
-static const uint8_t PIN_SCL = 7;
-static const uint8_t PIN_SDA = 8;
+static const uint8_t PIN_SCL = 7;    // shared
+static const uint8_t PIN_SDA = 8;    // shared
 
-// ---- bus timing -------------------------------------------------------------
-// 1 us half period ~= 500 kHz. NOTE: the datasheet caps I2C at 400 kHz
-// (Table 5), so raise this to 2 for an in-spec ~250 kHz if reads are unreliable.
+// 1 us half period ~= 500 kHz. The datasheet caps I2C at 400 kHz (Table 5), so
+// raise this to 2 for an in-spec ~250 kHz if reads prove unreliable.
 static const uint8_t HALF_US = 1;
 
-// ---- registers (AN01 4.0) ---------------------------------------------------
-static const uint8_t REG_PRODUCT_ID = 0x00;   // reads 0x31
-static const uint8_t REG_MOTION     = 0x02;   // bit7 = motion available
-static const uint8_t REG_DELTA_X_LO = 0x03;
-static const uint8_t REG_DELTA_Y_LO = 0x04;
-static const uint8_t REG_CONFIG     = 0x06;   // 0x97 reset, 0x17 run
-static const uint8_t REG_WRITE_PROT = 0x09;   // 0x5A unlock, 0x00 lock
-static const uint8_t REG_RES_X      = 0x0D;
-static const uint8_t REG_RES_Y      = 0x0E;
-static const uint8_t REG_DELTA_XY_H = 0x12;   // [7:4]=X[11:8], [3:0]=Y[11:8]
-static const uint8_t REG_ORIENTATION= 0x19;   // 0x04 = 12-bit data format
-static const uint8_t REG_BANK_SEL   = 0x7F;   // 0x00 = bank 0 (write-only)
+static const uint8_t REG_PRODUCT_ID = 0x00, REG_MOTION = 0x02,
+                     REG_DELTA_X_LO = 0x03, REG_DELTA_Y_LO = 0x04,
+                     REG_CONFIG = 0x06, REG_WRITE_PROT = 0x09,
+                     REG_RES_X = 0x0D, REG_RES_Y = 0x0E,
+                     REG_DELTA_XY_H = 0x12, REG_ORIENTATION = 0x19,
+                     REG_BANK_SEL = 0x7F;
+static const uint8_t PRODUCT_ID_EXPECTED = 0x31, MOTION_BIT = 0x80;
 
-static const uint8_t PRODUCT_ID_EXPECTED = 0x31;
-static const uint8_t MOTION_BIT          = 0x80;
+static const uint8_t CANDIDATES[] = { 0x75, 0x73, 0x79 };   // ID_SEL: GND/VDD/float
+static const uint8_t N_SENSORS = 2;
+static uint8_t addr[2]  = { 0x00, 0x00 };                   // filled by the scan
+static bool    alive[2] = { false, false };
 
-// ID_SEL: GND = 0x75, VDD = 0x73, floating = 0x79 (AN01 Fig.1)
-static const uint8_t ADDRESSES[] = { 0x75, 0x73, 0x79 };
-static uint8_t addr = 0x00;   // set by the scan at boot
-
-// Nominal scale at RES = 0xFF: 255 * 5 cpi = 1275 cpi; / 25.4 = 50.2 counts/mm.
-// NOMINAL ONLY -- the true figure varies with standoff and must be measured.
-static const float COUNTS_PER_MM = 50.2f;
+static const float COUNTS_PER_MM = 50.2f;   // NOMINAL; raw counts are the real data
 
 // ---- bit-banged I2C ---------------------------------------------------------
 // Open-drain: never drive a line high. Drive LOW, or release and let the
-// external pull-up raise it. Driving high would fight the pull-up and any
+// external pull-up raise it -- driving high would fight the pull-up and any
 // slave holding the line.
 static void sdaHigh(){ pinMode(PIN_SDA, INPUT); }
 static void sdaLow (){ pinMode(PIN_SDA, OUTPUT); digitalWrite(PIN_SDA, LOW); }
 static void sclHigh(){ pinMode(PIN_SCL, INPUT); }
 static void sclLow (){ pinMode(PIN_SCL, OUTPUT); digitalWrite(PIN_SCL, LOW); }
-
 static void busBegin(){ sdaHigh(); sclHigh(); delayMicroseconds(500); }
 
 static void i2cStart(){
@@ -104,114 +93,104 @@ static bool writeByte(uint8_t b){
     sclHigh(); delayMicroseconds(HALF_US);
     sclLow();
   }
-  sdaHigh();                                   // release for the slave's ACK
-  delayMicroseconds(HALF_US);
+  sdaHigh(); delayMicroseconds(HALF_US);        // release for the slave's ACK
   sclHigh(); delayMicroseconds(HALF_US);
   bool ack = (digitalRead(PIN_SDA) == 0);
   sclLow();  delayMicroseconds(HALF_US);
   return ack;
 }
 static uint8_t readByte(bool ack){
-  uint8_t v = 0;
-  sdaHigh();
+  uint8_t v = 0; sdaHigh();
   for (int i = 0; i < 8; ++i){
     delayMicroseconds(HALF_US);
     sclHigh(); delayMicroseconds(HALF_US);
     v = (uint8_t)((v << 1) | (digitalRead(PIN_SDA) ? 1 : 0));
     sclLow();
   }
-  ack ? sdaLow() : sdaHigh();                  // ACK = pull low, NACK = release
-  delayMicroseconds(HALF_US);
+  ack ? sdaLow() : sdaHigh(); delayMicroseconds(HALF_US);
   sclHigh(); delayMicroseconds(HALF_US);
   sclLow();  sdaHigh();
   return v;
 }
-
-static bool regRead(uint8_t reg, uint8_t &value){
+static bool regReadAt(uint8_t a, uint8_t reg, uint8_t &value){
   i2cStart();
-  if (!writeByte((uint8_t)(addr << 1)))        { i2cStop(); return false; }
-  if (!writeByte(reg))                         { i2cStop(); return false; }
-  i2cStart();                                  // repeated start
-  if (!writeByte((uint8_t)((addr << 1) | 1)))  { i2cStop(); return false; }
-  value = readByte(false);                     // NACK the single byte
-  i2cStop();
-  return true;
+  if (!writeByte((uint8_t)(a << 1)))       { i2cStop(); return false; }
+  if (!writeByte(reg))                     { i2cStop(); return false; }
+  i2cStart();                                               // repeated start
+  if (!writeByte((uint8_t)((a << 1) | 1))) { i2cStop(); return false; }
+  value = readByte(false);                                  // NACK single byte
+  i2cStop(); return true;
 }
-static bool regWrite(uint8_t reg, uint8_t value){
+static bool regWriteAt(uint8_t a, uint8_t reg, uint8_t value){
   i2cStart();
-  if (!writeByte((uint8_t)(addr << 1))) { i2cStop(); return false; }
-  if (!writeByte(reg))                  { i2cStop(); return false; }
-  if (!writeByte(value))                { i2cStop(); return false; }
-  i2cStop();
-  return true;
+  if (!writeByte((uint8_t)(a << 1))) { i2cStop(); return false; }
+  if (!writeByte(reg))               { i2cStop(); return false; }
+  if (!writeByte(value))             { i2cStop(); return false; }
+  i2cStop(); return true;
 }
+static uint8_t rd(uint8_t s, uint8_t reg){ uint8_t v = 0xFF; regReadAt(addr[s], reg, v); return v; }
+static void    wr(uint8_t s, uint8_t reg, uint8_t v){ regWriteAt(addr[s], reg, v); }
 
-// ---- sensor -----------------------------------------------------------------
-static int32_t cumX = 0, cumY = 0;
-static uint32_t motionReads = 0;
+// ---- sensors ----------------------------------------------------------------
+static int32_t  cumX[2] = {0, 0}, cumY[2] = {0, 0};
+static uint32_t motionReads[2] = {0, 0};
 
-static bool findSensor(){
-  // Report the idle line levels first: both should read HIGH via the pull-ups.
-  // A line stuck LOW is held down by something and no address will ever answer.
+// Scan every documented address and keep the ones that answer 0x31. Two sensors
+// on one bus must be strapped to different ID_SEL levels, so they land on
+// different addresses -- if only one appears, both are likely strapped the same.
+static uint8_t scanBus(){
   pinMode(PIN_SDA, INPUT_PULLUP); pinMode(PIN_SCL, INPUT_PULLUP);
   delayMicroseconds(500);
   Serial.print("# idle lines: SDA="); Serial.print(digitalRead(PIN_SDA) ? "HIGH" : "LOW");
   Serial.print(" SCL=");              Serial.println(digitalRead(PIN_SCL) ? "HIGH" : "LOW");
+  Serial.println("#   both HIGH is correct; a LOW line is held down and nothing will answer");
   busBegin();
 
-  for (uint8_t i = 0; i < sizeof(ADDRESSES); ++i){
-    addr = ADDRESSES[i];
-    uint8_t pid = 0xFF;
-    bool ok = regRead(REG_PRODUCT_ID, pid);
-    Serial.print("# probe 0x"); Serial.print(addr, HEX);
-    Serial.print(" -> ");       Serial.print(ok ? "ACK pid=0x" : "no ACK (pid=0x");
-    Serial.println(pid, HEX);
-    if (ok && pid == PRODUCT_ID_EXPECTED){
-      Serial.print("# found 0x31 at 0x"); Serial.println(addr, HEX);
-      return true;
-    }
+  uint8_t found = 0;
+  for (uint8_t i = 0; i < sizeof(CANDIDATES) && found < N_SENSORS; ++i){
+    uint8_t a = CANDIDATES[i], pid = 0xFF;
+    bool ok = regReadAt(a, REG_PRODUCT_ID, pid);
+    Serial.print("# probe 0x"); Serial.print(a, HEX);
+    Serial.print(" -> ");       Serial.print(ok ? "ACK " : "no ACK ");
+    Serial.print("pid=0x");     Serial.println(pid, HEX);
+    if (ok && pid == PRODUCT_ID_EXPECTED){ addr[found] = a; alive[found] = true; ++found; }
   }
-  addr = 0x00;
-  Serial.println("# FAIL: nothing answered 0x31 on 0x75/0x73/0x79.");
-  Serial.println("#   all 0xFF  -> no device driving: power, wiring, or missing pull-ups");
-  Serial.println("#   all 0x00  -> SDA stuck low");
-  Serial.println("#   If this is a TKMT (SPI) part, use the ../spi sketch instead.");
-  return false;
+  Serial.print("# sensors found: "); Serial.println(found);
+  if (found == 1) Serial.println("# WARNING: only one. Two sensors need DIFFERENT ID_SEL levels.");
+  return found;
 }
 
-static bool sensorInit(){
-  if (!findSensor()) return false;
-  regWrite(REG_BANK_SEL, 0x00);        // bank 0
-  regWrite(REG_CONFIG,   0x97);        // soft reset (self-clearing)
-  delay(1);
-  regWrite(REG_CONFIG,   0x17);        // leave reset
-  regWrite(REG_WRITE_PROT, 0x5A);      // unlock
-  regWrite(REG_RES_X, 0xFF);           // 1275 cpi
-  regWrite(REG_RES_Y, 0xFF);
-  regWrite(REG_ORIENTATION, 0x04);     // 12-bit data format
-  regWrite(REG_WRITE_PROT, 0x00);      // re-lock
-  // read back the two that matter, so a silent write failure cannot hide
-  uint8_t rx = 0, ry = 0;
-  regRead(REG_RES_X, rx); regRead(REG_RES_Y, ry);
-  Serial.print("# res_x=0x");  Serial.print(rx, HEX);
-  Serial.print(" res_y=0x");   Serial.println(ry, HEX);
+static bool sensorInit(uint8_t s){
+  if (!alive[s]) return false;
+  wr(s, REG_BANK_SEL, 0x00);
+  wr(s, REG_CONFIG,   0x97); delay(1);
+  wr(s, REG_CONFIG,   0x17);
+  wr(s, REG_WRITE_PROT, 0x5A);
+  wr(s, REG_RES_X, 0xFF);
+  wr(s, REG_RES_Y, 0xFF);
+  wr(s, REG_ORIENTATION, 0x04);
+  wr(s, REG_WRITE_PROT, 0x00);
+  // read back, so a silent write failure cannot masquerade as a scale error
+  Serial.print("# sensor "); Serial.print(s + 1);
+  Serial.print(" @0x");      Serial.print(addr[s], HEX);
+  Serial.print(" res_x=0x"); Serial.print(rd(s, REG_RES_X), HEX);
+  Serial.print(" res_y=0x"); Serial.println(rd(s, REG_RES_Y), HEX);
   return true;
 }
 
-static int16_t signExtend12(uint16_t v){       // 12-bit two's complement
+static int16_t signExtend12(uint16_t v){
   return (int16_t)((v & 0x800) ? (int16_t)(v | 0xF000) : (int16_t)v);
 }
-
-// Returns true if motion was present. Reads only when the motion bit is set --
-// the chip accumulates between reads, so polling rate is not critical.
-static bool readMotion(int16_t &dx, int16_t &dy){
+// The chip accumulates between reads and a read clears the registers, so the
+// polling rate is not critical -- see "already ruled out" in the README.
+static bool readMotion(uint8_t s, int16_t &dx, int16_t &dy){
   uint8_t motion = 0;
-  if (!regRead(REG_MOTION, motion))   { dx = dy = 0; return false; }
-  if (!(motion & MOTION_BIT))         { dx = dy = 0; return false; }
+  if (!regReadAt(addr[s], REG_MOTION, motion)){ dx = dy = 0; return false; }
+  if (!(motion & MOTION_BIT))                 { dx = dy = 0; return false; }
   uint8_t xl = 0, yl = 0, hi = 0;
-  if (!regRead(REG_DELTA_X_LO, xl) ||
-      !regRead(REG_DELTA_Y_LO, yl) ||
-      !regRead(REG_DELTA_XY_H,  hi)) { dx = dy = 0; return false; }
+  if (!regReadAt(addr[s], REG_DELTA_X_LO, xl) ||
+      !regReadAt(addr[s], REG_DELTA_Y_LO, yl) ||
+      !regReadAt(addr[s], REG_DELTA_XY_H,  hi)){ dx = dy = 0; return false; }
   dx = signExtend12((uint16_t)(((uint16_t)(hi & 0xF0) << 4) | xl));
   dy = signExtend12((uint16_t)(((uint16_t)(hi & 0x0F) << 8) | yl));
   return true;
@@ -220,40 +199,56 @@ static bool readMotion(int16_t &dx, int16_t &dy){
 void setup(){
   Serial.begin(115200);
   while (!Serial && millis() < 3000) {}
-  delay(50);                            // >= 10 ms power-on (DS Table 5)
-  Serial.println("# pat9125 minimum reproducible case (I2C)");
-  if (!sensorInit()){ Serial.println("# init failed -- halted"); while (1) delay(1000); }
+  delay(50);                      // >= 10 ms power-on (DS Table 5)
+  Serial.println("# pat9125 minimum reproducible case -- I2C, 2 sensors");
+  if (scanBus() == 0){
+    Serial.println("# FAIL: nothing answered 0x31 on 0x75/0x73/0x79.");
+    Serial.println("#   all 0xFF -> no device driving: power, wiring, or missing pull-ups");
+    Serial.println("#   all 0x00 -> SDA stuck low");
+    Serial.println("#   If this is a TKMT (SPI) part, use the ../../spi sketch instead.");
+    while (1) delay(1000);
+  }
+  for (uint8_t s = 0; s < N_SENSORS; ++s) sensorInit(s);
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
   Serial.println("# commands: z = zero, ? = status");
-  Serial.println("ms,dx,dy,x_counts,y_counts,x_mm,y_mm");
+  Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm");
 }
 
 void loop(){
   if (Serial.available()){
     char c = (char)Serial.read();
-    if (c == 'z'){ cumX = cumY = 0; motionReads = 0; Serial.println("# zeroed"); }
-    else if (c == '?'){
-      uint8_t pid = 0xFF; regRead(REG_PRODUCT_ID, pid);
-      Serial.print("# addr=0x");        Serial.print(addr, HEX);
-      Serial.print(" pid=0x");          Serial.print(pid, HEX);
-      Serial.print(" motion_reads=");   Serial.println(motionReads);
+    if (c == 'z'){
+      for (uint8_t s = 0; s < N_SENSORS; ++s){ cumX[s] = cumY[s] = 0; motionReads[s] = 0; }
+      Serial.println("# zeroed");
+    } else if (c == '?'){
+      for (uint8_t s = 0; s < N_SENSORS; ++s){
+        if (!alive[s]) continue;
+        Serial.print("# s"); Serial.print(s + 1);
+        Serial.print(" @0x"); Serial.print(addr[s], HEX);
+        Serial.print(" pid=0x"); Serial.print(rd(s, REG_PRODUCT_ID), HEX);
+        Serial.print(" motion_reads="); Serial.println(motionReads[s]);
+      }
     }
   }
 
-  int16_t dx, dy;
-  if (readMotion(dx, dy)){ cumX += dx; cumY += dy; ++motionReads; }
+  int16_t dx[2] = {0, 0}, dy[2] = {0, 0};
+  for (uint8_t s = 0; s < N_SENSORS; ++s){
+    if (!alive[s]) continue;
+    if (readMotion(s, dx[s], dy[s])){ cumX[s] += dx[s]; cumY[s] += dy[s]; ++motionReads[s]; }
+  }
 
-  // Print at a fixed 50 Hz regardless of poll rate, so the log stays readable.
   static uint32_t lastPrint = 0;
   uint32_t now = millis();
   if (now - lastPrint >= 20){
     lastPrint = now;
-    Serial.print(now);       Serial.print(',');
-    Serial.print(dx);        Serial.print(',');
-    Serial.print(dy);        Serial.print(',');
-    Serial.print(cumX);      Serial.print(',');
-    Serial.print(cumY);      Serial.print(',');
-    Serial.print(cumX / COUNTS_PER_MM, 3); Serial.print(',');
-    Serial.println(cumY / COUNTS_PER_MM, 3);
+    Serial.print(now);
+    for (uint8_t s = 0; s < N_SENSORS; ++s){
+      Serial.print(','); Serial.print(dx[s]);
+      Serial.print(','); Serial.print(dy[s]);
+      Serial.print(','); Serial.print(cumX[s]);
+      Serial.print(','); Serial.print(cumY[s]);
+      Serial.print(','); Serial.print(cumX[s] / COUNTS_PER_MM, 3);
+    }
+    Serial.println();
   }
 }

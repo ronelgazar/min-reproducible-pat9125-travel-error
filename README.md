@@ -4,6 +4,10 @@ Minimum reproducible case. Two variants, one per part number — pick the one th
 matches your chip. Single file each, no libraries, builds in the Arduino IDE or
 PlatformIO.
 
+Both sketches drive **two sensors on one shared bus**, matching the rig where this
+was observed. That matters: *both* sensors show the same shortfall, which is why a
+single faulty part is not the explanation.
+
 | | Part | Interface | Folder |
 |---|---|---|---|
 | SPI | `PAT9125EL-TKMT` | 3-wire SPI | [`spi/`](spi/) |
@@ -37,7 +41,8 @@ and aperture geometry is required to avoid it?**
 | Resolution | `RES_X = RES_Y = 0xFF` → 1275 cpi → **50.2 counts/mm** nominal |
 | Data format | `ORIENTATION = 0x04` (12-bit) |
 | Supply | VDD 3.3 V, VLD 3.3 V |
-| Target | ~2 mm rod, sliding axially |
+| Target | ~2 mm rod, sliding axially past both sensors |
+| Sensors | 2, on one shared bus (SPI: shared SCLK/SDIO + separate NCS; I2C: shared SCL/SDA + different `ID_SEL`) |
 
 ## Build
 
@@ -55,9 +60,16 @@ or open `spi/pat9125_mre_spi/pat9125_mre_spi.ino` in the Arduino IDE. No librari
 4. Compare the printed `x_mm` against the true distance.
 5. Repeat at a faster speed and compare the two ratios.
 
-Output is CSV (`ms,dx,dy,x_counts,y_counts,x_mm,y_mm`). **`x_counts` is the primary
-data** — `x_mm` applies the nominal 50.2 counts/mm, and that scale factor is part of
-what is in question.
+Output is CSV, both sensors per row:
+
+```
+ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm
+```
+
+**`s1_x` / `s2_x` (raw counts) are the primary data** — the `_mm` columns apply the
+nominal 50.2 counts/mm, and that scale factor is part of what is in question.
+Comparing the two sensors against each other is itself informative: they see the same
+rod through separate optics, so agreement between them points away from one bad part.
 
 ## Already ruled out
 
