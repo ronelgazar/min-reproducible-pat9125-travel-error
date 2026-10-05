@@ -204,6 +204,132 @@ static bool readMotion(uint8_t s, int16_t &dx, int16_t &dy){
   return true;
 }
 
+
+// ---- guided optical test -----------------------------------------------------
+// Three phases, advanced with 't': REST, SLOW, FAST. Each samples Shutter and
+// Frame_Avg continuously, then the result is interpreted at the end.
+//
+// The logic being tested: if the image is dim the chip lengthens its exposure,
+// a longer exposure blurs more per frame, and more blur at higher speed loses
+// counts. So a Shutter that CLIMBS with speed, or a persistently low Frame_Avg,
+// implicates illumination/aperture. Flat readings across all three phases
+// exonerate it and send you back to mechanics or scale.
+// NOTE: signatures below take uint8_t, not Phase -- the Arduino .ino
+// preprocessor hoists auto-generated prototypes above this declaration.
+enum Phase { PH_IDLE = 0, PH_REST = 1, PH_SLOW = 2, PH_FAST = 3, PH_DONE = 4 };
+static Phase phase = PH_IDLE;
+static const char* PHASE_NAME[] = { "idle", "REST", "SLOW", "FAST", "done" };
+
+struct PhaseStat {
+  uint32_t n; uint32_t shSum, faSum;
+  uint8_t  shMin, shMax, faMin, faMax;
+  int32_t  cumStart, cumEnd; uint32_t msStart, msEnd;
+};
+static PhaseStat ps[5];        // indexed by Phase
+
+static void phaseReset(uint8_t p){
+  PhaseStat &q = ps[p];
+  q.n = q.shSum = q.faSum = 0;
+  q.shMin = q.faMin = 255; q.shMax = q.faMax = 0;
+  q.cumStart = cumX[0]; q.cumEnd = cumX[0];
+  q.msStart = millis(); q.msEnd = q.msStart;
+}
+static void phaseSample(uint8_t p, uint8_t sh, uint8_t fa){
+  PhaseStat &q = ps[p];
+  q.shSum += sh; q.faSum += fa; ++q.n;
+  if (sh < q.shMin) q.shMin = sh;  if (sh > q.shMax) q.shMax = sh;
+  if (fa < q.faMin) q.faMin = fa;  if (fa > q.faMax) q.faMax = fa;
+  q.cumEnd = cumX[0]; q.msEnd = millis();
+}
+static float phaseSpeed(uint8_t p){
+  PhaseStat &q = ps[p];
+  float sec = (q.msEnd - q.msStart) / 1000.0f;
+  if (sec <= 0.05f) return 0.0f;
+  return fabs((q.cumEnd - q.cumStart) / COUNTS_PER_MM) / sec;
+}
+static float pct(float from, float to){ return (from > 0.01f) ? (to - from) / from * 100.0f : 0.0f; }
+
+static void phaseRow(uint8_t p){
+  PhaseStat &q = ps[p];
+  if (!q.n){ Serial.print("  "); Serial.print(PHASE_NAME[p]); Serial.println("  (no samples)"); return; }
+  Serial.print("  "); Serial.print(PHASE_NAME[p]);
+  Serial.print("\tspeed="); Serial.print(phaseSpeed(p), 2); Serial.print(" mm/s");
+  Serial.print("\tshutter ");  Serial.print(q.shMin); Serial.print("/");
+  Serial.print((float)q.shSum / q.n, 1);                Serial.print("/");
+  Serial.print(q.shMax);
+  Serial.print("\tframe_avg "); Serial.print(q.faMin); Serial.print("/");
+  Serial.print((float)q.faSum / q.n, 1);                Serial.print("/");
+  Serial.println(q.faMax);
+}
+
+static void testReport(){
+  Serial.println();
+  Serial.println("=== OPTICAL DIAGNOSTIC (sensor 1) ===");
+  Serial.println("  phase\tspeed\t\tshutter min/mean/max\tframe_avg min/mean/max");
+  phaseRow(PH_REST); phaseRow(PH_SLOW); phaseRow(PH_FAST);
+
+  if (!ps[PH_REST].n || !ps[PH_FAST].n){
+    Serial.println("  (need REST and FAST phases for a verdict)"); return;
+  }
+  float shRest = (float)ps[PH_REST].shSum / ps[PH_REST].n;
+  float shFast = (float)ps[PH_FAST].shSum / ps[PH_FAST].n;
+  float faRest = (float)ps[PH_REST].faSum / ps[PH_REST].n;
+  float faFast = (float)ps[PH_FAST].faSum / ps[PH_FAST].n;
+  float dSh = pct(shRest, shFast), dFa = pct(faRest, faFast);
+
+  Serial.println();
+  Serial.print("  shutter   rest->fast: "); Serial.print(dSh, 1); Serial.println("%");
+  Serial.print("  frame_avg rest->fast: "); Serial.print(dFa, 1); Serial.println("%");
+  Serial.println();
+  Serial.println("  INTERPRETATION (heuristic -- the numbers above are the evidence):");
+
+  bool flagged = false;
+  if (dSh > 25.0f){
+    flagged = true;
+    Serial.println("  * Shutter lengthens markedly under motion. The chip is short of");
+    Serial.println("    light and compensating with exposure -- which blurs more per frame");
+    Serial.println("    the faster you go. CONSISTENT with an aperture/illumination cause");
+    Serial.println("    for the speed-dependent count loss.");
+  }
+  if (faFast < 25.0f){
+    flagged = true;
+    Serial.println("  * Frame_Avg is very low: little light reaching the array. Check the");
+    Serial.println("    aperture (datasheet 4.5.1 wants > 3.2 x 2.6 mm), standoff, and that");
+    Serial.println("    nothing is shadowing the VCSEL.");
+  }
+  if (faFast > 230.0f){
+    flagged = true;
+    Serial.println("  * Frame_Avg is near saturation: ambient light is likely swamping the");
+    Serial.println("    VCSEL. Shield the opening. NOTE: enlarging the aperture makes this");
+    Serial.println("    WORSE, so fix the shielding before drilling.");
+  }
+  if (fabs(dSh) < 10.0f && faFast > 25.0f && faFast < 230.0f){
+    flagged = true;
+    Serial.println("  * Shutter and Frame_Avg are both stable and mid-range across all");
+    Serial.println("    phases. Illumination is NOT the limiting factor here -- look to");
+    Serial.println("    standoff variation, scale calibration, or the mechanics instead.");
+  }
+  if (!flagged){
+    Serial.println("  * Mixed signals -- no single cause stands out. Report the table above.");
+  }
+  Serial.println("=====================================");
+}
+
+static void advancePhase(){
+  if (phase == PH_IDLE){
+    phase = PH_REST; phaseReset(phase);
+    Serial.println("# PHASE 1/3 REST -- hold everything still. Press 't' when ready.");
+  } else if (phase == PH_REST){
+    phase = PH_SLOW; phaseReset(phase);
+    Serial.println("# PHASE 2/3 SLOW -- move the target SLOWLY. Press 't' when done.");
+  } else if (phase == PH_SLOW){
+    phase = PH_FAST; phaseReset(phase);
+    Serial.println("# PHASE 3/3 FAST -- move the target FAST. Press 't' when done.");
+  } else if (phase == PH_FAST){
+    phase = PH_DONE; testReport(); phase = PH_IDLE;
+  }
+}
+
 void setup(){
   Serial.begin(115200);
   while (!Serial && millis() < 3000) {}
@@ -224,14 +350,15 @@ void setup(){
     Serial.print(" frame_avg=");         Serial.println(rd(s, REG_FRAME_AVG));
   }
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
-  Serial.println("# commands: z = zero, ? = status");
+  Serial.println("# commands: z = zero, ? = status, t = run the guided optical test");
   Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm,s2_shutter,s2_frame_avg");
 }
 
 void loop(){
   if (Serial.available()){
     char c = (char)Serial.read();
-    if (c == 'z'){
+    if (c == 't'){ advancePhase(); }
+    else if (c == 'z'){
       for (uint8_t s = 0; s < N_SENSORS; ++s){ cumX[s] = cumY[s] = 0; motionReads[s] = 0; }
       Serial.println("# zeroed");
     } else if (c == '?'){

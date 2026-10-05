@@ -87,8 +87,42 @@ precisely the speed-dependent shortfall reported above.
 
 So the diagnostic question is: **does `Shutter` climb, or `Frame_Avg` sit low, and does
 either change between the slow and fast runs?** If so, the cause is illumination and
-aperture geometry rather than mechanics. Both are printed once at rest as a baseline
-before anything moves.
+aperture geometry rather than mechanics.
+
+## Running the optical test
+
+Press **`t`** to step through three phases, pressing `t` again to end each:
+
+| Phase | Do this |
+|---|---|
+| 1 — REST | hold everything still |
+| 2 — SLOW | move the target slowly |
+| 3 — FAST | move the target fast |
+
+It then prints the measured table and an interpretation:
+
+```
+=== OPTICAL DIAGNOSTIC (sensor 1) ===
+  phase   speed           shutter min/mean/max   frame_avg min/mean/max
+  REST    0.00 mm/s       12/12.0/13             98/98.4/99
+  SLOW    3.70 mm/s       18/19.2/21             71/72.0/74
+  FAST    12.40 mm/s      31/33.8/36             54/55.1/57
+
+  shutter   rest->fast: +181.7%
+  frame_avg rest->fast: -44.0%
+```
+
+### Reading the result
+
+| Observation | Means | Points at |
+|---|---|---|
+| Shutter climbs >25% rest→fast | chip is short of light and lengthening exposure; longer exposure blurs more per frame, and blur grows with speed | **aperture / illumination** — consistent with the speed-dependent loss |
+| `Frame_Avg` very low (<25) | little light reaching the array | aperture size, standoff, or a shadowed VCSEL |
+| `Frame_Avg` near saturation (>230) | ambient light swamping the VCSEL | shielding — **and note enlarging the aperture makes this worse** |
+| Both stable and mid-range | illumination is fine | **not** optical — look to standoff variation, scale calibration, or mechanics |
+
+The thresholds are heuristics; the table of numbers is the actual evidence. Take the
+REST baseline *before* modifying any hardware, so there is something to compare against.
 
 ## Already ruled out
 
