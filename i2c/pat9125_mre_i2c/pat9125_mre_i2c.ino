@@ -56,7 +56,15 @@ static const uint8_t REG_PRODUCT_ID = 0x00, REG_MOTION = 0x02,
                      REG_CONFIG = 0x06, REG_WRITE_PROT = 0x09,
                      REG_RES_X = 0x0D, REG_RES_Y = 0x0E,
                      REG_DELTA_XY_H = 0x12, REG_ORIENTATION = 0x19,
-                     REG_BANK_SEL = 0x7F;
+                     REG_BANK_SEL = 0x7F,
+                     // Optical diagnostics. Shutter is the exposure index: the chip
+                     // lengthens it when the image is dim, and a longer exposure means
+                     // more motion blur per frame -- which is how poor illumination
+                     // turns into LOST COUNTS AT SPEED. Frame_Avg is mean image
+                     // brightness. Read them while stationary and while moving, slow
+                     // and fast: a shutter that climbs with speed, or a low Frame_Avg,
+                     // points at illumination/aperture rather than the mechanics.
+                     REG_SHUTTER = 0x14, REG_FRAME_AVG = 0x17;
 static const uint8_t PRODUCT_ID_EXPECTED = 0x31, MOTION_BIT = 0x80;
 
 static const uint8_t CANDIDATES[] = { 0x75, 0x73, 0x79 };   // ID_SEL: GND/VDD/float
@@ -209,9 +217,15 @@ void setup(){
     while (1) delay(1000);
   }
   for (uint8_t s = 0; s < N_SENSORS; ++s) sensorInit(s);
+  for (uint8_t s = 0; s < N_SENSORS; ++s){
+    if (!alive[s]) continue;
+    Serial.print("# sensor "); Serial.print(s + 1);
+    Serial.print(" at rest: shutter=");  Serial.print(rd(s, REG_SHUTTER));
+    Serial.print(" frame_avg=");         Serial.println(rd(s, REG_FRAME_AVG));
+  }
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
   Serial.println("# commands: z = zero, ? = status");
-  Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm");
+  Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm,s2_shutter,s2_frame_avg");
 }
 
 void loop(){
@@ -248,6 +262,8 @@ void loop(){
       Serial.print(','); Serial.print(cumX[s]);
       Serial.print(','); Serial.print(cumY[s]);
       Serial.print(','); Serial.print(cumX[s] / COUNTS_PER_MM, 3);
+      Serial.print(','); Serial.print(alive[s] ? rd(s, REG_SHUTTER) : 0);
+      Serial.print(','); Serial.print(alive[s] ? rd(s, REG_FRAME_AVG) : 0);
     }
     Serial.println();
   }

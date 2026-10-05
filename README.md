@@ -63,13 +63,32 @@ or open `spi/pat9125_mre_spi/pat9125_mre_spi.ino` in the Arduino IDE. No librari
 Output is CSV, both sensors per row:
 
 ```
-ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm
+ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,...,s2_frame_avg
 ```
 
 **`s1_x` / `s2_x` (raw counts) are the primary data** — the `_mm` columns apply the
 nominal 50.2 counts/mm, and that scale factor is part of what is in question.
 Comparing the two sensors against each other is itself informative: they see the same
 rod through separate optics, so agreement between them points away from one bad part.
+
+### Optical diagnostics
+
+Each row also logs two registers that bear directly on the suspected cause:
+
+| Reg | Name | Reads |
+|---|---|---|
+| `0x14` | **Shutter** | exposure-time index — the chip lengthens it when the image is dim |
+| `0x17` | **Frame_Avg** | mean image brightness |
+
+These matter because they turn an optical problem into a measurable one. A dim image
+makes the chip lengthen its exposure; a longer exposure means more motion blur per
+frame; more blur at higher speed means degraded correlation and lost counts — which is
+precisely the speed-dependent shortfall reported above.
+
+So the diagnostic question is: **does `Shutter` climb, or `Frame_Avg` sit low, and does
+either change between the slow and fast runs?** If so, the cause is illumination and
+aperture geometry rather than mechanics. Both are printed once at rest as a baseline
+before anything moves.
 
 ## Already ruled out
 
