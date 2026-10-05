@@ -13,9 +13,9 @@
 // THE PROBLEM
 //   Moving the target a ruler-measured distance, BOTH sensors consistently report
 //   LESS travel than actually occurred -- and the shortfall grows with speed:
-//       ~3.7 mm/s  ->  ~91-92% of true travel
-//      ~12.4 mm/s  ->  ~88%
-//   Repeatable to +/-0.3% within a speed, over many runs, on both sensors.
+//   The shortfall is repeatable within a given speed and appears on both sensors,
+//   so it reads as systematic rather than noise or one faulty part. Figures are
+//   deliberately not quoted here -- use 'r' below to generate them on your setup.
 //
 // SETUP IT WAS SEEN ON
 //   RES_X = RES_Y = 0xFF (1275 cpi, nominal 50.2 counts/mm), ORIENTATION = 0x04.

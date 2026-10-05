@@ -19,25 +19,17 @@ behaviour reported here — see the troubleshooting notes in each sketch header.
 
 ## The question
 
-A PAT9125EL tracking a **~2 mm diameter rod** consistently reports **less**
-displacement than the rod actually travels, and the shortfall **grows with speed**:
-
-| Speed | Reported ÷ actual | Spread |
-|---|---|---|
-| ~3.7 mm/s | 0.912, 0.918, 0.918 | ±0.3% |
-| ~12.4 mm/s | 0.875, 0.880 | ±0.3% |
-
-Roughly **8% short at 3.7 mm/s, 12% short at 12.4 mm/s** — highly repeatable within
-a speed, across many runs and both of two sensors, which is why we read it as
-systematic rather than noise.
-
-> **Provenance:** these figures come from comparing against *commanded* motor travel,
-> which is itself an open-loop assumption. The `r` command below checks the same ratio
-> against a caliper instead, removing that assumption. If you reproduce this, the ruler
-> figure is the one worth reporting back.
+A PAT9125EL tracking a **~2 mm diameter rod** reports **less** displacement than the
+rod actually travels, and the shortfall **grows with speed**. It is repeatable within
+a given speed and appears on both sensors, which is why we read it as systematic
+rather than noise or a single faulty part.
 
 **Is this expected for this part on a cylindrical target, and if so what standoff
 and aperture geometry is required to avoid it?**
+
+Our own figures are omitted here deliberately — they were taken against commanded
+motor travel rather than a caliper, and we would rather you generate the numbers on
+your own setup than anchor on ours. The sketches below produce them directly.
 
 ## Configuration
 
@@ -62,15 +54,9 @@ or open `spi/pat9125_mre_spi/pat9125_mre_spi.ino` in the Arduino IDE. No librari
 1. Flash and open the serial monitor at 115200. It must report product ID `0x31`.
 2. Send `z` to zero the counters.
 3. Move the target a **caliper-measured** distance at a steady, known speed.
-4. Type `r <true mm>` — e.g. `r 40.15`. It prints, per sensor:
-
-```
-# RULER CHECK against 40.150 mm
-#   s1: counts=1842 measured=36.693mm ratio=0.9139 (-8.61%)
-#       implied counts/mm = 45.879   (nominal 50.20)
-#   s2: counts=1839 measured=36.633mm ratio=0.9124 (-8.76%)
-#       implied counts/mm = 45.804   (nominal 50.20)
-```
+4. Type `r <true mm>` — e.g. `r 40.15`. For each sensor it prints the raw counts,
+   the measured distance, the **ratio** of measured to true, and the **implied
+   counts/mm** that the measurement gives.
 
 5. Repeat at a faster speed and compare the two ratios — the gap between them is the
    reported effect.
@@ -127,18 +113,8 @@ Press **`t`** to step through three phases, pressing `t` again to end each:
 | 2 — SLOW | move the target slowly |
 | 3 — FAST | move the target fast |
 
-It then prints the measured table and an interpretation:
-
-```
-=== OPTICAL DIAGNOSTIC (sensor 1) ===
-  phase   speed           shutter min/mean/max   frame_avg min/mean/max
-  REST    0.00 mm/s       12/12.0/13             98/98.4/99
-  SLOW    3.70 mm/s       18/19.2/21             71/72.0/74
-  FAST    12.40 mm/s      31/33.8/36             54/55.1/57
-
-  shutter   rest->fast: +181.7%
-  frame_avg rest->fast: -44.0%
-```
+It then prints, per phase, the mean speed and the min/mean/max of Shutter and
+Frame_Avg, followed by the percentage change from REST to FAST and an interpretation.
 
 ### Reading the result
 
