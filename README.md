@@ -121,8 +121,32 @@ It then prints the measured table and an interpretation:
 | `Frame_Avg` near saturation (>230) | ambient light swamping the VCSEL | shielding — **and note enlarging the aperture makes this worse** |
 | Both stable and mid-range | illumination is fine | **not** optical — look to standoff variation, scale calibration, or mechanics |
 
-The thresholds are heuristics; the table of numbers is the actual evidence. Take the
-REST baseline *before* modifying any hardware, so there is something to compare against.
+The thresholds are heuristics; the table of numbers is the actual evidence.
+
+### Before changing any hardware
+
+**Take the REST baseline first.** Once the aperture is enlarged or the mount altered,
+the comparison is gone — and the before/after is the entire value of the test. Record
+the three-phase table while the rig is still in its current state.
+
+**A saturated `Frame_Avg` inverts the obvious fix.** The intuitive response to an
+optical problem is to open the aperture up. That is right when the image is *dim*, and
+actively wrong when it is *saturated*: a larger opening lets in more ambient light and
+makes swamping worse. These two failures look similar from the outside and have
+opposite remedies, which is why the test distinguishes them before anything is drilled.
+Worth noting the VCSEL is 850 nm, so ordinary daylight near the rig is a real source.
+
+### What follows from each outcome
+
+| Result | Do this |
+|---|---|
+| Shutter climbs with speed, `Frame_Avg` low | Enlarge the aperture to at least **3.2 × 2.6 mm** (datasheet §4.5.1, offset 1.45/1.75 mm about centre because it includes the VCSEL). Keep the bore short or chamfered so the chip sees a cone rather than a tunnel. |
+| `Frame_Avg` near saturation | **Shield the opening from ambient light before enlarging it.** Re-run the test afterwards; the dim-image case may be hiding underneath. |
+| Both stable and mid-range | Illumination is not the cause. Go after standoff variation (we measure 0.13–0.2 mm of lateral wander, so radial wander is likely similar) and the scale calibration. |
+| Shutter climbs *and* `Frame_Avg` saturated | Contradictory — re-run with the rig shielded, since stray light during only part of the test will produce this. |
+
+Whatever the outcome, the three-phase table is the thing to send on: it is a direct
+measurement of the optical conditions, not an inference from the displacement error.
 
 ## Already ruled out
 
