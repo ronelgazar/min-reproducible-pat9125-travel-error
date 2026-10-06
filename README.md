@@ -152,6 +152,31 @@ Worth noting the VCSEL is 850 nm, so ordinary daylight near the rig is a real so
 Whatever the outcome, the three-phase table is the thing to send on: it is a direct
 measurement of the optical conditions, not an inference from the displacement error.
 
+## Surface scan — what the sensor sees along the rod
+
+Press **`p`** to toggle scan mode, then move slowly along the full stroke.
+
+`Frame_Avg` is one number per frame, not an image, so this is not a picture of the
+surface — but it is what the sensor sees *as a signal*, mapped to position. Samples
+are emitted **per unit of travel** rather than per unit of time, so the profile has
+uniform spatial resolution however fast you move: roughly one sample every 0.1 mm,
+limited by the poll rate.
+
+What it distinguishes:
+
+| Pattern | Means |
+|---|---|
+| Brightness uniform along the stroke | the surface is not the variable — look at geometry (aperture, standoff) |
+| A localised dip | something on the **rod** at that position: contamination, a finish change, a defect |
+| Brightness modulating smoothly | standoff varying with position — consistent with rod wobble |
+| Shutter rising where brightness falls | the chip compensating for a dark stretch with exposure |
+
+`analyze.py` reports the spread and the darkest position, and `--plot` writes a
+`_scan.png` of brightness and exposure against position along the rod.
+
+Note there is **no frame-grab on this part** — neither the datasheet nor AN01
+documents one, and no undocumented registers are touched here.
+
 ## Capturing and analysing a run
 
 The sketch prints to a serial monitor, which is fine for a quick look but leaves

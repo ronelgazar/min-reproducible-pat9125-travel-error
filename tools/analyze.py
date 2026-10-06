@@ -19,13 +19,19 @@ MIN_MOVE_CNT = 20      # ignore twitches
 
 
 def load(path):
-    """Rows plus the '#' lines, which carry the ruler checks and test reports."""
-    rows, notes = [], []
+    """Rows, scan rows, and the '#' lines carrying ruler checks and test reports."""
+    rows, notes, scan = [], [], []
     with open(path, encoding="utf-8", errors="replace") as f:
         for raw in f:
             line = raw.rstrip("\n")
             if line.startswith("#"):
                 notes.append(line)
+                continue
+            if line.startswith("P,"):
+                try:
+                    scan.append([float(x) for x in line.split(",")[1:]])
+                except ValueError:
+                    pass
                 continue
             if line.startswith("ms,") or "," not in line:
                 continue
@@ -34,7 +40,7 @@ def load(path):
                 rows.append([float(x) for x in parts])
             except ValueError:
                 continue
-    return rows, notes
+    return rows, notes, scan
 
 
 def segment(rows, xcol):
@@ -64,21 +70,24 @@ def main():
     ap.add_argument("--plot", action="store_true")
     args = ap.parse_args()
 
-    rows, notes = load(args.csv)
-    if not rows:
-        sys.exit("no data rows found -- was the board printing CSV?")
+    rows, notes, scan = load(args.csv)
+    if not rows and not scan:
+        sys.exit("no data found -- was the board printing CSV?")
 
     # ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg, s2... (8 cols/sensor)
     S1X, S1SH, S1FA = 3, 6, 7
     S2X, S2SH, S2FA = 10, 13, 14
-    two = len(rows[0]) > S2FA
+    two = bool(rows) and len(rows[0]) > S2FA
     cpm = args.counts_per_mm
 
     print(f"=== {args.csv} ===")
-    print(f"rows={len(rows)}  duration={(rows[-1][0]-rows[0][0])/1000:.1f}s  "
-          f"sensors={'2' if two else '1'}  counts/mm={cpm}")
+    if rows:
+        print(f"rows={len(rows)}  duration={(rows[-1][0]-rows[0][0])/1000:.1f}s  "
+              f"sensors={'2' if two else '1'}  counts/mm={cpm}")
+    else:
+        print(f"scan-only log  samples={len(scan)}  counts/mm={cpm}")
 
-    moves = segment(rows, S1X)
+    moves = segment(rows, S1X) if rows else []
     if moves:
         print(f"\n--- moves (n={len(moves)}) ---")
         print(f"{'#':>3} {'dist_s1':>9} {'dist_s2':>9} {'s2/s1':>7} "
@@ -131,7 +140,7 @@ def main():
             print("\n--- optical vs speed ---")
             print("  need moves at two clearly different speeds (>1.5x apart).")
             print("  Run a slow pass and a fast pass, or use the sketch's 't' test.")
-    else:
+    elif rows:
         print("\nno moves detected -- did the target actually move?")
 
     checks = [n for n in notes if "RULER CHECK" in n or "ratio=" in n or "implied counts/mm" in n]
@@ -140,6 +149,29 @@ def main():
         for n in checks:
             print(" ", n.lstrip("# "))
 
+    if scan:
+        # P,s1_x,s1_y,s1_sh,s1_fa[,s2_x,s2_y,s2_sh,s2_fa]
+        pos = [r[0] / cpm for r in scan]
+        sh  = [r[2] for r in scan]
+        fa  = [r[3] for r in scan]
+        span = max(pos) - min(pos)
+        print(f"\n--- surface scan ({len(scan)} samples over {span:.2f} mm) ---")
+        if span > 0:
+            print(f"resolution: {span/len(scan)*1000:.0f} um/sample")
+        print(f"frame_avg  min={min(fa):.0f} mean={st.mean(fa):.1f} max={max(fa):.0f}"
+              f"  spread={max(fa)-min(fa):.0f}")
+        print(f"shutter    min={min(sh):.0f} mean={st.mean(sh):.1f} max={max(sh):.0f}"
+              f"  spread={max(sh)-min(sh):.0f}")
+        rng = (max(fa) - min(fa)) / st.mean(fa) * 100 if st.mean(fa) else 0
+        if rng < 10:
+            print("  => brightness is uniform along the rod. The surface is not the")
+            print("     variable; look at geometry (aperture, standoff) instead.")
+        else:
+            worst = min(range(len(fa)), key=lambda i: fa[i])
+            print(f"  => brightness varies {rng:.0f}% along the stroke, darkest near")
+            print(f"     {pos[worst]:.1f} mm. A localised dip points at the SURFACE")
+            print("     (contamination, finish, a defect) rather than the optics.")
+
     if args.plot:
         try:
             import matplotlib
@@ -147,23 +179,42 @@ def main():
             import matplotlib.pyplot as plt
         except ImportError:
             sys.exit("--plot needs matplotlib:  pip install matplotlib")
-        t = [(r[0] - rows[0][0]) / 1000.0 for r in rows]
-        fig, ax = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
-        ax[0].plot(t, [r[S1X]/cpm for r in rows], label="sensor 1")
-        if two:
-            ax[0].plot(t, [r[S2X]/cpm for r in rows], label="sensor 2")
-        ax[0].set_ylabel("travel (mm)"); ax[0].legend(); ax[0].grid(alpha=.3)
-        ax[1].plot(t, [r[S1SH] for r in rows], label="s1 shutter")
-        if two: ax[1].plot(t, [r[S2SH] for r in rows], label="s2 shutter")
-        ax[1].set_ylabel("shutter (exposure)"); ax[1].legend(); ax[1].grid(alpha=.3)
-        ax[2].plot(t, [r[S1FA] for r in rows], label="s1 frame_avg")
-        if two: ax[2].plot(t, [r[S2FA] for r in rows], label="s2 frame_avg")
-        ax[2].set_ylabel("frame_avg (brightness)"); ax[2].set_xlabel("time (s)")
-        ax[2].legend(); ax[2].grid(alpha=.3)
-        out = args.csv.rsplit(".", 1)[0] + ".png"
-        fig.suptitle("PAT9125: travel, exposure and brightness", y=.995)
-        fig.tight_layout(); fig.savefig(out, dpi=130)
-        print(f"\nplot -> {out}")
+        if rows:
+            t = [(r[0] - rows[0][0]) / 1000.0 for r in rows]
+            fig, ax = plt.subplots(3, 1, figsize=(10, 9), sharex=True)
+            ax[0].plot(t, [r[S1X]/cpm for r in rows], label="sensor 1")
+            if two:
+                ax[0].plot(t, [r[S2X]/cpm for r in rows], label="sensor 2")
+            ax[0].set_ylabel("travel (mm)"); ax[0].legend(); ax[0].grid(alpha=.3)
+            ax[1].plot(t, [r[S1SH] for r in rows], label="s1 shutter")
+            if two: ax[1].plot(t, [r[S2SH] for r in rows], label="s2 shutter")
+            ax[1].set_ylabel("shutter (exposure)"); ax[1].legend(); ax[1].grid(alpha=.3)
+            ax[2].plot(t, [r[S1FA] for r in rows], label="s1 frame_avg")
+            if two: ax[2].plot(t, [r[S2FA] for r in rows], label="s2 frame_avg")
+            ax[2].set_ylabel("frame_avg (brightness)"); ax[2].set_xlabel("time (s)")
+            ax[2].legend(); ax[2].grid(alpha=.3)
+        if scan:
+            fig2, bx = plt.subplots(2, 1, figsize=(10, 6), sharex=True)
+            pos = [r[0] / cpm for r in scan]
+            bx[0].plot(pos, [r[3] for r in scan], lw=.8, label="s1 frame_avg")
+            if len(scan[0]) >= 8:
+                bx[0].plot(pos, [r[7] for r in scan], lw=.8, label="s2 frame_avg")
+            bx[0].set_ylabel("frame_avg"); bx[0].legend(); bx[0].grid(alpha=.3)
+            bx[1].plot(pos, [r[2] for r in scan], lw=.8, label="s1 shutter")
+            if len(scan[0]) >= 8:
+                bx[1].plot(pos, [r[6] for r in scan], lw=.8, label="s2 shutter")
+            bx[1].set_ylabel("shutter"); bx[1].set_xlabel("position along rod (mm)")
+            bx[1].legend(); bx[1].grid(alpha=.3)
+            fig2.suptitle("Surface scan: what the sensor sees vs position", y=.98)
+            fig2.tight_layout()
+            so = args.csv.rsplit(".", 1)[0] + "_scan.png"
+            fig2.savefig(so, dpi=130); print(f"scan plot -> {so}")
+
+        if rows:
+            out = args.csv.rsplit(".", 1)[0] + ".png"
+            fig.suptitle("PAT9125: travel, exposure and brightness", y=.995)
+            fig.tight_layout(); fig.savefig(out, dpi=130)
+            print(f"plot -> {out}")
 
 
 if __name__ == "__main__":

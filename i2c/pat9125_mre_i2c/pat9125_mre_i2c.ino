@@ -205,6 +205,32 @@ static bool readMotion(uint8_t s, int16_t &dx, int16_t &dy){
 }
 
 
+// ---- surface scan ------------------------------------------------------------
+// Samples are emitted PER UNIT OF TRAVEL rather than per unit of time, so the
+// profile has uniform spatial resolution no matter how fast you move. At the
+// default step that is one sample every ~0.1 mm; the limit is the poll rate, so
+// move slowly for a dense scan.
+//
+// Frame_Avg is one number per frame, not an image -- so this is not a picture of
+// the surface. It is what the sensor SEES AS A SIGNAL, mapped to position: dark
+// or bright patches, stretches where the exposure has to work harder, and where
+// the lateral channel wanders. Uniform readings along the rod point at geometry
+// (aperture, standoff); localised dips point at the surface itself.
+static bool    scanMode  = false;
+static int32_t lastScanX = 0;
+static const int32_t SCAN_STEP_COUNTS = 5;     // ~0.1 mm at 50.2 counts/mm
+
+static void scanToggle(){
+  scanMode = !scanMode;
+  if (scanMode){
+    lastScanX = cumX[0];
+    Serial.println("# SCAN ON -- move slowly and steadily along the full stroke.");
+    Serial.println("# scan columns: P,s1_x,s1_y,s1_shutter,s1_frame_avg,s2_x,s2_y,s2_shutter,s2_frame_avg");
+  } else {
+    Serial.println("# SCAN OFF");
+  }
+}
+
 // ---- guided optical test -----------------------------------------------------
 // Three phases, advanced with 't': REST, SLOW, FAST. Each samples Shutter and
 // Frame_Avg continuously, then the result is interpreted at the end.
@@ -375,7 +401,7 @@ void setup(){
     Serial.print(" frame_avg=");         Serial.println(rd(s, REG_FRAME_AVG));
   }
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
-  Serial.println("# commands: z = zero | r <mm> = ruler check | t = optical test | ? = status");
+  Serial.println("# commands: z = zero | r <mm> = ruler | t = optical test | p = surface scan | ? = status");
   Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm,s2_shutter,s2_frame_avg");
 }
 
@@ -391,6 +417,7 @@ void loop(){
       int sp = cmd.indexOf(' ');
       verifyAgainst(sp < 0 ? 0.0f : cmd.substring(sp + 1).toFloat());
     }
+    else if (c == 'p'){ scanToggle(); }
     else if (c == 't'){ advancePhase(); }
     else if (c == 'z'){
       for (uint8_t s = 0; s < N_SENSORS; ++s){ cumX[s] = cumY[s] = 0; motionReads[s] = 0; }
