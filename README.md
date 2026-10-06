@@ -152,6 +152,29 @@ Worth noting the VCSEL is 850 nm, so ordinary daylight near the rig is a real so
 Whatever the outcome, the three-phase table is the thing to send on: it is a direct
 measurement of the optical conditions, not an inference from the displacement error.
 
+## Capturing and analysing a run
+
+The sketch prints to a serial monitor, which is fine for a quick look but leaves
+nothing to analyse or send back. Two small tools close that:
+
+```
+python3 tools/capture.py                     # auto-detects the port
+python3 tools/analyze.py <file>.csv --plot
+```
+
+`capture.py` logs everything the board prints — CSV rows *and* the `#` lines, so
+ruler checks and optical-test reports end up in the file — while forwarding anything
+you type, so `z`, `r 40.15` and `t` still work mid-recording. Needs `pyserial`.
+
+`analyze.py` segments the log into individual moves and reports, per move: distance
+per sensor, the **sensor-to-sensor ratio**, mean speed, and mean Shutter/Frame_Avg.
+It then compares the slowest and fastest moves and says whether the optical readings
+track speed. Numbers are stdlib-only; `--plot` additionally writes travel, exposure
+and brightness against time, and needs `matplotlib`.
+
+The sensor-to-sensor ratio is worth watching independently: near 1.0 means both
+sensors see the same thing, so a single faulty part is not the explanation.
+
 ## Already ruled out
 
 - **Polling rate.** The chip accumulates between reads and a read clears the
