@@ -22,14 +22,25 @@
 //   Target is a ~2 mm diameter rod sliding axially past both sensors.
 //
 // WIRING (any MCU; pins below are Seeed XIAO SAMD21 defaults)
-//   SCL -> D7    shared clock -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
-//   SDA -> D8    shared data  -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
+//   SCL -> D2    shared clock -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
+//   SDA -> D7    shared data  -> both sensors, pull-up to 3V3 (AN01 Fig.1: 5k)
 //   ID_SEL per sensor picks its address: GND = 0x75, VDD = 0x73, floating = 0x79.
-//     Two sensors on one bus therefore need DIFFERENT ID_SEL levels.
-//   VDD -> 3.3 V (2.1-3.6 V)   VLD -> 3.3 V (2.7-3.6 V)   VSS -> GND
+//     Two sensors on one bus therefore need DIFFERENT ID_SEL levels. On a TKIT
+//     this is the pin a breakout may silkscreen as NCS -- that name belongs to
+//     the SPI variant; here it selects the address and is never toggled.
+//   VDD  -> 3.3 V (2.1-3.6 V)   VSS -> GND
+//   VLD  -> 3.3 V (2.7-3.6 V)   -- SEPARATE supply pin for the laser. Without it
+//     the chip still answers but frame_avg stays ~0 and nothing can track.
+//   VDDA -> 4.7 uF to GND and NOTHING ELSE. It is the 1.8 V regulator OUTPUT,
+//     not an input. Left floating the core never starts and EVERY register
+//     reads 0xFF on every address -- the single most confusing failure here.
 //
-//   BOTH lines need pull-ups. A missing pull-up on SCL is a common cause of
-//   every read returning 0xFF.
+//   ID_SEL IS SAMPLED WHEN THE SENSOR POWERS UP. Resetting or reflashing the MCU
+//   does not re-sample it: if the sensors stay powered they keep their old
+//   address. Power-cycle the sensors after changing ID_SEL.
+//
+//   BOTH lines need pull-ups. The internal MCU pull-ups (20-60k) are too weak and
+//   give intermittent corrupt reads; fit external 5k as the datasheet shows.
 //
 // HOW TO REPRODUCE
 //   1. Flash. It should find two sensors at two different addresses.
@@ -44,8 +55,8 @@
 // =============================================================================
 #include <Arduino.h>
 
-static const uint8_t PIN_SCL = 7;    // shared
-static const uint8_t PIN_SDA = 8;    // shared
+static const uint8_t PIN_SCL = 2;    // shared
+static const uint8_t PIN_SDA = 7;    // shared
 
 // 1 us half period ~= 500 kHz. The datasheet caps I2C at 400 kHz (Table 5), so
 // raise this to 2 for an in-spec ~250 kHz if reads prove unreliable.
@@ -78,9 +89,14 @@ static const float COUNTS_PER_MM = 50.2f;   // NOMINAL; raw counts are the real 
 // Open-drain: never drive a line high. Drive LOW, or release and let the
 // external pull-up raise it -- driving high would fight the pull-up and any
 // slave holding the line.
-static void sdaHigh(){ pinMode(PIN_SDA, INPUT); }
+// Releasing with INPUT_PULLUP rather than INPUT means the sketch also runs on a
+// bench rig with no external resistors fitted. The MCU's internal pull-ups are
+// 20-60k against the 5k the datasheet asks for, so edges are slow and reads go
+// intermittently corrupt -- fine for bring-up, NOT for trustworthy measurements.
+// setup() warns when it detects this. Fit 5k externally before taking data.
+static void sdaHigh(){ pinMode(PIN_SDA, INPUT_PULLUP); }
 static void sdaLow (){ pinMode(PIN_SDA, OUTPUT); digitalWrite(PIN_SDA, LOW); }
-static void sclHigh(){ pinMode(PIN_SCL, INPUT); }
+static void sclHigh(){ pinMode(PIN_SCL, INPUT_PULLUP); }
 static void sclLow (){ pinMode(PIN_SCL, OUTPUT); digitalWrite(PIN_SCL, LOW); }
 static void busBegin(){ sdaHigh(); sclHigh(); delayMicroseconds(500); }
 
@@ -152,6 +168,15 @@ static uint8_t scanBus(){
   Serial.print("# idle lines: SDA="); Serial.print(digitalRead(PIN_SDA) ? "HIGH" : "LOW");
   Serial.print(" SCL=");              Serial.println(digitalRead(PIN_SCL) ? "HIGH" : "LOW");
   Serial.println("#   both HIGH is correct; a LOW line is held down and nothing will answer");
+  pinMode(PIN_SDA, INPUT); pinMode(PIN_SCL, INPUT);   // internal pull-ups OFF
+  delayMicroseconds(500);
+  bool extPull = digitalRead(PIN_SDA) && digitalRead(PIN_SCL);
+  Serial.print("# external pull-ups: ");
+  Serial.println(extPull ? "present" : "NOT DETECTED -- using the MCU's internal ones");
+  if (!extPull){
+    Serial.println("#   internal pull-ups are 20-60k vs the 5k the datasheet specifies.");
+    Serial.println("#   Good enough for bring-up; fit 5k to 3V3 before trusting data.");
+  }
   busBegin();
 
   uint8_t found = 0;
