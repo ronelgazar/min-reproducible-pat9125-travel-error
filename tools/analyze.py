@@ -20,12 +20,18 @@ MIN_MOVE_CNT = 20      # ignore twitches
 
 def load(path):
     """Rows, scan rows, and the '#' lines carrying ruler checks and test reports."""
-    rows, notes, scan = [], [], []
+    rows, notes, scan, wake = [], [], [], []
     with open(path, encoding="utf-8", errors="replace") as f:
         for raw in f:
             line = raw.rstrip("\n")
             if line.startswith("#"):
                 notes.append(line)
+                continue
+            if line.startswith("W,"):
+                try:
+                    wake.append([float(x) for x in line.split(",")[1:]])
+                except ValueError:
+                    pass
                 continue
             if line.startswith("P,"):
                 try:
@@ -40,7 +46,7 @@ def load(path):
                 rows.append([float(x) for x in parts])
             except ValueError:
                 continue
-    return rows, notes, scan
+    return rows, notes, scan, wake
 
 
 def segment(rows, xcol):
@@ -70,8 +76,8 @@ def main():
     ap.add_argument("--plot", action="store_true")
     args = ap.parse_args()
 
-    rows, notes, scan = load(args.csv)
-    if not rows and not scan:
+    rows, notes, scan, wake = load(args.csv)
+    if not rows and not scan and not wake:
         sys.exit("no data found -- was the board printing CSV?")
 
     # ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg, s2... (8 cols/sensor)
@@ -171,6 +177,50 @@ def main():
             print(f"  => brightness varies {rng:.0f}% along the stroke, darkest near")
             print(f"     {pos[worst]:.1f} mm. A localised dip points at the SURFACE")
             print("     (contamination, finish, a defect) rather than the optics.")
+
+    if wake:
+        # W,idx,idle_ms,dur_ms,s1_counts,s1_sh0,s1_shEnd[,s2_counts,s2_sh0,s2_shEnd]
+        print(f"\n--- sleep / downshift test ({len(wake)} moves) ---")
+        print(f"{'#':>3} {'idle_ms':>8} {'dur_ms':>7} {'counts':>8} {'mm':>7} "
+              f"{'mm/s':>7} {'sh_start':>9} {'sh_end':>7}")
+        for w in wake:
+            mm = w[3] / cpm
+            spd = abs(mm) / (w[2] / 1000.0) if w[2] > 0 else 0.0
+            print(f"{int(w[0]):>3} {int(w[1]):>8} {int(w[2]):>7} {int(w[3]):>8} "
+                  f"{mm:>7.3f} {spd:>7.2f} {int(w[4]):>9} {int(w[5]):>7}")
+
+        # Compare the shortest-idle against the longest-idle moves. Normalise by
+        # duration: a slower move covers the same ground, so raw counts alone
+        # would confound speed with idle.
+        srt = sorted(wake, key=lambda w: w[1])
+        half = max(1, len(srt) // 3)
+        short, long_ = srt[:half], srt[-half:]
+        def cps(g):   # counts per second of movement
+            v = [abs(w[3]) / (w[2] / 1000.0) for w in g if w[2] > 0]
+            return st.mean(v) if v else 0.0
+        def cnt(g):
+            return st.mean([abs(w[3]) for w in g])
+        print(f"\nshortest idle (mean {st.mean([w[1] for w in short]):.0f} ms): "
+              f"mean {cnt(short):.0f} counts")
+        print(f"longest  idle (mean {st.mean([w[1] for w in long_]):.0f} ms): "
+              f"mean {cnt(long_):.0f} counts")
+        if cnt(short):
+            d = (cnt(long_) - cnt(short)) / cnt(short) * 100
+            print(f"difference: {d:+.1f}% counts for the same intended move")
+            sh0 = st.mean([w[4] for w in short]); sh1 = st.mean([w[4] for w in long_])
+            print(f"shutter at move start: {sh0:.1f} (short idle) vs {sh1:.1f} (long idle)")
+            if d < -3:
+                print("  => counts FALL as the pause grows. The chip is losing counts")
+                print("     waking from sleep/downshift. Try configuring 0x05/0x0A/0x0B,")
+                print("     and note AN01's init never touches them.")
+            elif abs(d) <= 3:
+                print("  => counts are flat across idle times. Sleep/downshift is NOT")
+                print("     the cause; this points back at optics or mechanics.")
+            else:
+                print("  => counts RISE with idle, which sleep does not explain --")
+                print("     suspect the moves were not equivalent. Repeat more carefully.")
+        if len({round(w[1], -3) for w in wake}) < 3:
+            print("  NOTE: idle times are not well spread -- vary the pause more.")
 
     if args.plot:
         try:

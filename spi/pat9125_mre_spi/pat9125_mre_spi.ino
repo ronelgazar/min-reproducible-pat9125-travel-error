@@ -185,6 +185,48 @@ static void scanToggle(){
   }
 }
 
+// ---- sleep / downshift test ---------------------------------------------------
+// The datasheet advertises "programmable sleep modes & downshift time", with run
+// current 0.7 mA against 25 uA / 10 uA in Sleep1 / Sleep2. A 30-70x current drop
+// means a much lower frame rate. Registers 0x05 Operation_Mode, 0x0A Sleep1 and
+// 0x0B Sleep2 control this -- and AN01's init sequence never touches them, so
+// every implementation following it runs the factory defaults (0xA0, 0x77, 0x10).
+//
+// Hypothesis: after an idle the chip has downshifted. Motion resumes while it is
+// still slow, the surface moves further between frames than correlation can match,
+// and those counts are lost. That loss grows with speed -- the same signature as
+// an optical problem, from a completely different cause.
+//
+// The test needs NO register writes and no guessed bit definitions: make the SAME
+// move repeatedly, varying only the pause before it, and see whether counts fall
+// as the pause grows.
+static bool     sleepTest    = false;
+static bool     slpInMove    = false;
+static uint32_t slpLastMotion= 0;
+static uint32_t slpIdleMs    = 0;
+static uint32_t slpStartMs   = 0;
+static int32_t  slpPrevX     = 0;
+static int32_t  slpStartX[2] = {0, 0};
+static uint8_t  slpSh0[2]    = {0, 0};
+static uint16_t slpIdx       = 0;
+static const uint32_t SLEEP_MOVE_END_MS = 400;   // no motion this long = move over
+
+static void sleepTestToggle(){
+  sleepTest = !sleepTest;
+  if (sleepTest){
+    slpInMove = false; slpIdx = 0;
+    slpPrevX = cumX[0]; slpLastMotion = millis();
+    Serial.println("# SLEEP TEST ON");
+    Serial.println("# Make the SAME move (e.g. one full stroke) several times, varying");
+    Serial.println("# only the PAUSE before each: ~10s, ~5s, ~2s, ~1s, then immediately.");
+    Serial.println("# Repeat the set 2-3 times. Moves are detected and reported for you.");
+    Serial.println("# If counts fall as the pause grows, the chip is losing counts waking up.");
+    Serial.println("# columns: W,idx,idle_ms,dur_ms,s1_counts,s1_sh_start,s1_sh_end,s2_counts,s2_sh_start,s2_sh_end");
+  } else {
+    Serial.println("# SLEEP TEST OFF");
+  }
+}
+
 // ---- guided optical test -----------------------------------------------------
 // Three phases, advanced with 't': REST, SLOW, FAST. Each samples Shutter and
 // Frame_Avg continuously, then the result is interpreted at the end.
@@ -351,7 +393,7 @@ void setup(){
     Serial.print(" frame_avg=");         Serial.println(regRead(s, REG_FRAME_AVG));
   }
   Serial.print("# counts_per_mm (nominal) = "); Serial.println(COUNTS_PER_MM, 2);
-  Serial.println("# commands: z = zero | r <mm> = ruler | t = optical test | p = surface scan | ? = status");
+  Serial.println("# commands: z = zero | r <mm> = ruler | t = optical | p = scan | w = sleep test | ? = status");
   Serial.println("ms,s1_dx,s1_dy,s1_x,s1_y,s1_x_mm,s1_shutter,s1_frame_avg,s2_dx,s2_dy,s2_x,s2_y,s2_x_mm,s2_shutter,s2_frame_avg");
 }
 
@@ -368,6 +410,7 @@ void loop(){
       verifyAgainst(sp < 0 ? 0.0f : cmd.substring(sp + 1).toFloat());
     }
     else if (c == 'p'){ scanToggle(); }
+    else if (c == 'w'){ sleepTestToggle(); }
     else if (c == 't'){ advancePhase(); }
     else if (c == 'z'){
       for (uint8_t s = 0; s < N_SENSORS; ++s){ cumX[s] = cumY[s] = 0; motionReads[s] = 0; }
@@ -390,6 +433,35 @@ void loop(){
 
   if (phase >= PH_REST && phase <= PH_FAST && alive[0])
     phaseSample(phase, regRead(0, REG_SHUTTER), regRead(0, REG_FRAME_AVG));
+
+  if (sleepTest){
+    uint32_t tnow = millis();
+    if (cumX[0] != slpPrevX){
+      if (!slpInMove){
+        slpInMove  = true;
+        slpIdleMs  = tnow - slpLastMotion;
+        slpStartMs = tnow;
+        for (uint8_t s = 0; s < N_SENSORS; ++s){
+          slpStartX[s] = (s == 0) ? slpPrevX : cumX[s];
+          slpSh0[s]    = alive[s] ? regRead(s, REG_SHUTTER) : 0;
+        }
+      }
+      slpLastMotion = tnow;
+    }
+    if (slpInMove && (tnow - slpLastMotion) > SLEEP_MOVE_END_MS){
+      slpInMove = false;
+      Serial.print("W,");   Serial.print(++slpIdx);
+      Serial.print(',');    Serial.print(slpIdleMs);
+      Serial.print(',');    Serial.print(slpLastMotion - slpStartMs);
+      for (uint8_t s = 0; s < N_SENSORS; ++s){
+        Serial.print(','); Serial.print(cumX[s] - slpStartX[s]);
+        Serial.print(','); Serial.print(slpSh0[s]);
+        Serial.print(','); Serial.print(alive[s] ? regRead(s, REG_SHUTTER) : 0);
+      }
+      Serial.println();
+    }
+    slpPrevX = cumX[0];
+  }
 
   if (scanMode && labs(cumX[0] - lastScanX) >= SCAN_STEP_COUNTS){
     lastScanX = cumX[0];

@@ -152,6 +152,64 @@ Worth noting the VCSEL is 850 nm, so ordinary daylight near the rig is a real so
 Whatever the outcome, the three-phase table is the thing to send on: it is a direct
 measurement of the optical conditions, not an inference from the displacement error.
 
+## Sleep / downshift test — a second candidate cause
+
+Press **`w`**, then make the same move several times varying only the pause before
+each (~10 s, ~5 s, ~2 s, ~1 s, then immediately). Repeat the set two or three times.
+Each move is detected and reported automatically.
+
+**Why this matters.** The datasheet advertises programmable sleep modes and downshift
+time: run current 0.7 mA against 25 uA / 10 uA in Sleep1 / Sleep2. A 30-70x current
+drop means a much lower frame rate. These are registers `0x05` Operation_Mode,
+`0x0A` Sleep1 and `0x0B` Sleep2 — and **AN01's initialisation sequence never touches
+them**, so any implementation following it (including this one) runs the factory
+defaults `0xA0`, `0x77`, `0x10`.
+
+If the chip has downshifted during an idle, motion resumes while it is still slow,
+the surface moves further between frames than correlation can match, and those counts
+are lost. **That loss grows with speed — the same signature as an optical problem,
+from an entirely different cause.** It is worth excluding before blaming the optics.
+
+The test needs no register writes and no guessed bit definitions: counts falling as
+the pause grows implicates sleep; counts flat across idle times rules it out.
+
+| `analyze.py` says | Means |
+|---|---|
+| counts fall as pause grows | losing counts waking from sleep/downshift |
+| counts flat across idle times | sleep is not the cause — look at optics or mechanics |
+
+## Register list
+
+The widely circulated PAT9125EL datasheet **v1.3 has no register list**. Version 1.2
+(31 May 2017) does, in §5.0 — 16 registers:
+
+| Addr | Name | Access | Reset | |
+|---|---|---|---|---|
+| 0x00 | Product_ID1 | RO | 0x31 | |
+| 0x01 | Product_ID2 | RO | 0x91 | stronger identity check than 0x00 alone |
+| 0x02 | Motion_Status | RO | - | |
+| 0x03 | Delta_X_Lo | RO | - | |
+| 0x04 | Delta_Y_Lo | RO | - | |
+| 0x05 | Operation_Mode | R/W | 0xA0 | **not set by AN01** |
+| 0x06 | Configuration | R/W | 0x17 | |
+| 0x09 | Write_Protect | R/W | 0x00 | |
+| 0x0A | Sleep1 | R/W | 0x77 | **not set by AN01** |
+| 0x0B | Sleep2 | R/W | 0x10 | **not set by AN01** |
+| 0x0D | RES_X | R/W | 0x14 | 0x14 = 100 cpi, not 1275 |
+| 0x0E | RES_Y | R/W | 0x14 | |
+| 0x12 | Delta_XY_Hi | RO | - | |
+| 0x14 | Shutter | RO | - | index of LASER shutter time |
+| 0x17 | Frame_Avg | RO | - | average brightness of a frame |
+| 0x19 | Orientation | R/W | 0x04 | |
+
+Two things follow. **There is no frame-capture or raw-pixel register** — so the
+surface scan above is the closest available substitute. And **`0x7F` bank select is
+absent from this list** despite being used by both AN01 and Prusa's driver, which
+proves the published list is incomplete; undocumented registers exist on this part.
+
+Open questions for PixArt: does the PAT9125EL support raw frame capture, and what
+are the bit definitions of `0x05`, `0x0A` and `0x0B`?
+
 ## Surface scan — what the sensor sees along the rod
 
 Press **`p`** to toggle scan mode, then move slowly along the full stroke.
